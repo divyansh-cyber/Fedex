@@ -40,7 +40,7 @@ export default {
   },
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
-    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
+    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '10000', 10), // Increased from 100 to 10000
   },
   logging: {
     level: process.env.LOG_LEVEL || 'info',

@@ -126,29 +126,29 @@ export class ExchangeService {
       instrument: order.instrument,
     });
 
-    // Save order to database
+    // Save order to database (critical - must wait)
     await postgres.saveOrder(order);
 
-    // Save idempotency key
+    // Save idempotency key (critical - must wait)
     if (idempotencyKey) {
       await redis.setIdempotencyKey(idempotencyKey, order.order_id);
     }
 
-    // Save order event
-    await postgres.saveOrderEvent({
+    // Save order event (can be async)
+    postgres.saveOrderEvent({
       order_id: order.order_id,
       event_type: 'order_created',
       event_data: order.toJSON(),
       timestamp: new Date(),
-    });
+    }).catch(err => logger.error('Error saving order event', { error: err.message }));
 
-    // Publish to Kafka
-    await kafkaProducer.sendOrder(order);
-    await kafkaProducer.sendOrderEvent({
+    // Publish to Kafka (non-blocking)
+    kafkaProducer.sendOrder(order).catch(err => logger.error('Error sending order to Kafka', { error: err.message }));
+    kafkaProducer.sendOrderEvent({
       order_id: order.order_id,
       event_type: 'order_created',
       event_data: order.toJSON(),
-    });
+    }).catch(err => logger.error('Error sending order event to Kafka', { error: err.message }));
 
     // Process order through matching engine
     const engine = this.getEngine(order.instrument);
@@ -160,41 +160,43 @@ export class ExchangeService {
       order,
       async (trade) => {
         trades.push(trade);
-        // Save trade
-        await postgres.saveTrade(trade);
         
-        // Track metrics
+        // Track metrics (synchronous)
         tradesTotal.inc({ instrument: trade.instrument });
         tradeVolume.inc({ instrument: trade.instrument }, trade.quantity * trade.price);
         ordersMatchedTotal.inc({ instrument: trade.instrument });
         
-        // Update client positions
-        await this._updatePositions(trade);
+        // Save trade (critical - must wait for persistence)
+        postgres.saveTrade(trade).catch(err => logger.error('Error saving trade', { error: err.message }));
         
-        // Publish to Kafka
-        await kafkaProducer.sendTrade(trade);
+        // Update client positions (can be async)
+        this._updatePositions(trade).catch(err => logger.error('Error updating positions', { error: err.message }));
         
-        // Publish to Redis pub/sub for WebSocket clients
-        await redis.publish(`trades:${trade.instrument}`, trade.toJSON());
+        // Publish to Kafka (non-blocking)
+        kafkaProducer.sendTrade(trade).catch(err => logger.error('Error sending trade to Kafka', { error: err.message }));
+        
+        // Publish to Redis pub/sub (non-blocking)
+        redis.publish(`trades:${trade.instrument}`, trade.toJSON()).catch(err => logger.error('Error publishing trade', { error: err.message }));
       },
       async (updatedOrder) => {
         orderUpdates.push(updatedOrder);
-        // Update order in database
+        
+        // Update order in database (critical - must wait for persistence)
         await postgres.saveOrder(updatedOrder);
         
-        // Save order event
-        await postgres.saveOrderEvent({
+        // Save order event (can be async)
+        postgres.saveOrderEvent({
           order_id: updatedOrder.order_id,
           event_type: `order_${updatedOrder.status}`,
           event_data: updatedOrder.toJSON(),
           timestamp: new Date(),
-        });
+        }).catch(err => logger.error('Error saving order event', { error: err.message }));
         
-        // Publish to Kafka
-        await kafkaProducer.sendOrder(updatedOrder);
+        // Publish to Kafka (non-blocking)
+        kafkaProducer.sendOrder(updatedOrder).catch(err => logger.error('Error sending order to Kafka', { error: err.message }));
         
-        // Publish to Redis pub/sub
-        await redis.publish(`orders:${updatedOrder.instrument}`, updatedOrder.toJSON());
+        // Publish to Redis pub/sub (non-blocking)
+        redis.publish(`orders:${updatedOrder.instrument}`, updatedOrder.toJSON()).catch(err => logger.error('Error publishing order', { error: err.message }));
       }
     );
 
@@ -202,10 +204,10 @@ export class ExchangeService {
     const latency = (Date.now() - startTime) / 1000;
     orderLatency.observe({ type: order.type, side: order.side }, latency);
 
-    // Publish orderbook update
+    // Publish orderbook update (non-blocking)
     const snapshot = engine.getOrderBookSnapshot(20);
-    await kafkaProducer.sendOrderBookUpdate(order.instrument, snapshot);
-    await redis.publish(`orderbook:${order.instrument}`, snapshot);
+    kafkaProducer.sendOrderBookUpdate(order.instrument, snapshot).catch(err => logger.error('Error sending orderbook update', { error: err.message }));
+    redis.publish(`orderbook:${order.instrument}`, snapshot).catch(err => logger.error('Error publishing orderbook', { error: err.message }));
 
     logger.info('Order submitted', {
       order_id: order.order_id,

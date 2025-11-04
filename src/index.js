@@ -24,6 +24,11 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Optimize Express for performance
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
 app.use(metricsMiddleware);
 
 // Rate limiting
@@ -87,8 +92,14 @@ async function initialize() {
     const wsServer = new WebSocketServer(server);
     wsServer.initialize();
 
-    // Start HTTP server
+    // Start HTTP server with optimized settings
     const port = config.server.port;
+    
+    // Configure server for better performance
+    server.keepAliveTimeout = 65000; // Keep connections alive longer
+    server.headersTimeout = 66000;   // Headers timeout slightly higher than keepAlive
+    server.maxConnections = 1000;    // Allow more concurrent connections
+    
     server.listen(port, () => {
       logger.info(`Server listening on port ${port}`);
       logger.info(`Health check: http://localhost:${port}/healthz`);
